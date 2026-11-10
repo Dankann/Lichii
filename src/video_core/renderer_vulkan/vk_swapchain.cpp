@@ -22,10 +22,22 @@
 #include "video_core/vulkan_common/vulkan_device.h"
 #include "video_core/vulkan_common/vulkan_wrapper.h"
 #include "vulkan/vulkan_core.h"
+#ifdef EGLANTINE_STREAMLINE
+#include "video_core/vulkan_common/streamline.h"
+#endif
 
 namespace Vulkan {
 
 namespace {
+
+/// Streamline's DLSS Frame Generation presents and paces the frames.
+bool FrameGenPresents() {
+#ifdef EGLANTINE_STREAMLINE
+    return Streamline::FrameGenAvailable();
+#else
+    return false;
+#endif
+}
 
 VkSurfaceFormatKHR ChooseSwapSurfaceFormat(vk::Span<VkSurfaceFormatKHR> formats) {
     if (formats.size() == 1 && formats[0].format == VK_FORMAT_UNDEFINED) {
@@ -43,6 +55,10 @@ VkSurfaceFormatKHR ChooseSwapSurfaceFormat(vk::Span<VkSurfaceFormatKHR> formats)
 
 static VkPresentModeKHR ChooseSwapPresentMode(bool has_imm, bool has_mailbox,
                                               bool has_fifo_relaxed) {
+    // DLSS Frame Generation on Vulkan doesn't support VSync.
+    if (FrameGenPresents() && (has_imm || has_mailbox)) {
+        return has_imm ? VK_PRESENT_MODE_IMMEDIATE_KHR : VK_PRESENT_MODE_MAILBOX_KHR;
+    }
     // Mailbox doesn't lock the application like FIFO (vsync)
     // FIFO present mode locks the framerate to the monitor's refresh rate
     Settings::VSyncMode setting = [has_imm, has_mailbox]() {
@@ -234,7 +250,8 @@ u64 Swapchain::Present(VkSemaphore render_semaphore) {
     const auto present_queue{device.GetPresentQueue()};
     // Ids for vkWaitForPresentKHR (the host frame pacer). They only have to increase per
     // swapchain, so one counter serves every swapchain this object creates.
-    const u64 present_id = device.IsKhrPresentWaitSupported() ? ++next_present_id : 0;
+    const u64 present_id =
+        device.IsKhrPresentWaitSupported() && !FrameGenPresents() ? ++next_present_id : 0;
     const VkPresentIdKHR present_id_info{
         .sType = VK_STRUCTURE_TYPE_PRESENT_ID_KHR,
         .pNext = nullptr,
